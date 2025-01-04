@@ -120,6 +120,7 @@ typedef struct esl_sqcache_s {
  * in character-based (fread()) parsers (like the FASTA parser).
  */
 #define eslREADBUFSIZE  4096
+// TODO 블록 사이즈 최적화 확인
 
 extern int  esl_sqfile_Open(const char *seqfile, int fmt, const char *env, ESL_SQFILE **ret_sqfp);
 extern void esl_sqfile_Close(ESL_SQFILE *sqfp);
