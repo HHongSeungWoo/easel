@@ -492,51 +492,54 @@ esl_workqueue_Reset(ESL_WORK_QUEUE *queue)
  * Throws:    <eslESYS> if thread synchronization fails somewhere.
  *            <eslEINVAL> if something's wrong with <queue>.
  */
-int esl_workqueue_ReaderUpdate(ESL_WORK_QUEUE *queue, void *in, void **out)
-{
+int esl_workqueue_ReaderUpdate(ESL_WORK_QUEUE *queue, void *in, void **out) {
   int inx;
   int queueSize;
 
-  if (queue == NULL)                                ESL_EXCEPTION(eslEINVAL, "Invalid queue object");
-  if (pthread_mutex_lock (&queue->queueMutex) != 0) ESL_EXCEPTION(eslESYS,   "mutex lock failed");
+  if (queue == NULL)
+    ESL_EXCEPTION(eslEINVAL, "Invalid queue object");
+  if (pthread_mutex_lock(&queue->queueMutex) != 0)
+    ESL_EXCEPTION(eslESYS, "mutex lock failed");
 
   queueSize = queue->queueSize;
 
+  printf("qp size %d\n", queue->pendingWorkers);
+  printf("worker %d, %d\n", queue->workerQueueHead, queue->workerQueueCnt);
+  printf("reader %d, %d\n", queue->readerQueueHead, queue->readerQueueCnt);
+
   /* check if the caller is queuing up an item */
-  if (in != NULL)
-    {
+  if (in != NULL) {
+    /* check to make sure we don't overflow */
+    if (queue->workerQueueCnt >= queueSize)
+      ESL_EXCEPTION(eslEINVAL, "Work queue overflow");
 
-      /* check to make sure we don't overflow */
-      if (queue->workerQueueCnt >= queueSize) ESL_EXCEPTION(eslEINVAL, "Work queue overflow");
+    inx = (queue->workerQueueHead + queue->workerQueueCnt) % queueSize;
+    queue->workerQueue[inx] = in;
+    ++queue->workerQueueCnt;
 
-      inx = (queue->workerQueueHead + queue->workerQueueCnt) % queueSize;
-      queue->workerQueue[inx] = in;
-      ++queue->workerQueueCnt;
-
-      if (queue->pendingWorkers != 0)
-	{
-	  if (pthread_cond_signal (&queue->workerQueueCond) != 0) ESL_EXCEPTION(eslESYS, "pthread_cond_signal failed");
-	}
+    if (queue->pendingWorkers != 0) {
+      if (pthread_cond_signal(&queue->workerQueueCond) != 0)
+        ESL_EXCEPTION(eslESYS, "pthread_cond_signal failed");
     }
+  }
 
   /* check if the caller is waiting for a queued item */
-  if (out != NULL)
-    {
-
-      /* wait for a processed buffers to be returned */
-      while (queue->readerQueueCnt == 0) 
-	{
-	  if (pthread_cond_wait (&queue->readerQueueCond, &queue->queueMutex) != 0) ESL_EXCEPTION(eslESYS, "cond wait failed");
-	}
-
-      inx = queue->readerQueueHead;
-      *out = queue->readerQueue[inx];
-      queue->readerQueue[inx] = NULL;
-      queue->readerQueueHead = (queue->readerQueueHead + 1) % queueSize;
-      --queue->readerQueueCnt;
+  if (out != NULL) {
+    /* wait for a processed buffers to be returned */
+    while (queue->readerQueueCnt == 0) {
+      if (pthread_cond_wait(&queue->readerQueueCond, &queue->queueMutex) != 0)
+        ESL_EXCEPTION(eslESYS, "cond wait failed");
     }
 
-  if (pthread_mutex_unlock (&queue->queueMutex) != 0) ESL_EXCEPTION(eslESYS, "mutex unlock failed");
+    inx = queue->readerQueueHead;
+    *out = queue->readerQueue[inx];
+    queue->readerQueue[inx] = NULL;
+    queue->readerQueueHead = (queue->readerQueueHead + 1) % queueSize;
+    --queue->readerQueueCnt;
+  }
+
+  if (pthread_mutex_unlock(&queue->queueMutex) != 0)
+    ESL_EXCEPTION(eslESYS, "mutex unlock failed");
 
   return eslOK;
 }

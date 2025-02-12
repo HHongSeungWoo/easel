@@ -584,7 +584,6 @@ AC_CONFIG_FILES([ \
  Makefile               \
  miniapps/Makefile      \
  testsuite/Makefile     \
- documentation/Makefile \
  ])
 
 # Substitutions in Easel man pages:

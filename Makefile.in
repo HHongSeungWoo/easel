@@ -653,7 +653,6 @@ uninstall:
 # "make clean" removes almost everything except configuration files
 #
 clean:
-	${QUIET_SUBDIR0}documentation ${QUIET_SUBDIR1} clean
 	${QUIET_SUBDIR0}testsuite     ${QUIET_SUBDIR1} clean
 	${QUIET_SUBDIR0}miniapps      ${QUIET_SUBDIR1} clean
 	${QUIET}-rm -f ${ALL_OBJS} libeasel.a
@@ -673,7 +672,6 @@ endif
 
 
 distclean:  clean
-	${QUIET_SUBDIR0}documentation ${QUIET_SUBDIR1} distclean
 	${QUIET_SUBDIR0}testsuite     ${QUIET_SUBDIR1} distclean
 	${QUIET_SUBDIR0}miniapps      ${QUIET_SUBDIR1} distclean
 	${QUIET}-rm -f esl_config.h decoy_config.h

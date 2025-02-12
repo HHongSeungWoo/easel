@@ -119,7 +119,7 @@ typedef struct esl_sqcache_s {
 /* eslREADBUFSIZE is the fixed size of a block to bring in at one time,
  * in character-based (fread()) parsers (like the FASTA parser).
  */
-#define eslREADBUFSIZE  4096
+#define eslREADBUFSIZE  40960
 
 extern int  esl_sqfile_Open(const char *seqfile, int fmt, const char *env, ESL_SQFILE **ret_sqfp);
 extern void esl_sqfile_Close(ESL_SQFILE *sqfp);

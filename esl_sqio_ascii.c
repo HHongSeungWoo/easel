@@ -749,39 +749,6 @@ sqascii_Read(ESL_SQFILE *sqfp, ESL_SQ *sq)
 
   ESL_SQASCII_DATA *ascii = &sqfp->data.ascii;
 
-  if (esl_sqio_IsAlignment(sqfp->format))
-  {
-      ESL_SQ *tmpsq = NULL;
-      if (ascii->msa == NULL || ascii->idx >= ascii->msa->nseq)
-      { /* we need to load a new alignment? */
-        esl_msa_Destroy(ascii->msa);
-        status = esl_msafile_Read(ascii->afp, &(ascii->msa));
-        if (status == eslEFORMAT)
-        { /* oops, a parse error; upload the error info from afp to sqfp */
-           ascii->linenumber = ascii->afp->linenumber;
-           strcpy(ascii->errbuf, ascii->afp->errmsg); /* errbufs same size! */
-           return eslEFORMAT;
-        }
-        if (status != eslOK) return status;
-        ascii->idx = 0;
-      }
-      
-      /* grab next seq from alignment */
-      /* this is inefficient; it goes via a temporarily allocated copy of the sequence */
-      if ((status = esl_sq_FetchFromMSA(ascii->msa, ascii->idx, &tmpsq)) != eslOK) return status;
-      esl_sq_GrowTo(sq, tmpsq->n);
-      esl_sq_Copy(tmpsq, sq);
-      esl_sq_Destroy(tmpsq);
-      ascii->idx++;
-
-      sq->start = 1;
-      sq->end   = sq->n;
-      sq->C     = 0;
-      sq->W     = sq->n;
-      sq->L     = sq->n;
-      return eslOK;
-    }
-
   /* Main case: read next seq from sqfp's stream */
   if (ascii->nc == 0) return eslEOF;
   if ((status = ascii->parse_header(sqfp, sq)) != eslOK) return status; /* EMEM, EOF, EFORMAT */
@@ -1462,142 +1429,17 @@ sqascii_ReadBlock(ESL_SQFILE *sqfp, ESL_SQ_BLOCK *sqBlock, int max_residues, int
   ESL_SQ *tmpsq = NULL;
 
   sqBlock->count = 0;
-  if (max_sequences < 1 || max_sequences > sqBlock->listSize)
-    max_sequences = sqBlock->listSize;
+  int _max_sequences = sqBlock->listSize;
 
+  for (i = 0; i < _max_sequences && size < MAX_RESIDUE_COUNT; ++i)
+  {
+    status = sqascii_Read(sqfp, sqBlock->list + i);
 
-  if ( !long_target  )
-  {  /* in these cases, an individual sequence won't ever be really long,
-      so just read in a sequence at a time  */
-
-    for (i = 0; i < max_sequences && size < MAX_RESIDUE_COUNT; ++i)
-    {
-      status = sqascii_Read(sqfp, sqBlock->list + i);
-
-      if (status != eslOK) break;
-      size += sqBlock->list[i].n;
-      ++sqBlock->count;
-    }
+    if (status != eslOK) break;
+    size += sqBlock->list[i].n;
+    ++sqBlock->count;
   }
-  else
-  { /* DNA, not an alignment.  Might be really long sequences */
 
-    if (max_residues < 1)
-      max_residues = MAX_RESIDUE_COUNT;
-
-    tmpsq = esl_sq_CreateDigital(sqBlock->list->abc);
-    //if complete flag is set to FALSE, then the prior block must have ended with a window that was a possibly
-    //incomplete part of it's full sequence. Read another overlapping window.
-    if (! sqBlock->complete )
-    {
-      //overloading C as indicator of how big C should be for this window reading action
-      status = sqascii_ReadWindow(sqfp, sqBlock->list->C, max_residues, sqBlock->list);
-      if (status == eslOK)
-      {
-        sqBlock->count = i = 1;
-        size = sqBlock->list->n - sqBlock->list->C;
-        sqBlock->list->L = sqfp->data.ascii.L;
-        if (size == max_residues)
-        { // Filled the block with a single very long window.
-
-          sqBlock->complete = FALSE; // default value, unless overridden below
-          status = skip_whitespace(sqfp);
-          if ( status != eslOK ) { // either EOD or end of buffer (EOF) was reached before the next character was seen
-            sqBlock->complete = TRUE;
-            status = eslOK;
-          }
-
-          if(tmpsq != NULL) esl_sq_Destroy(tmpsq);
-          return status;
-        }
-        else
-        {
-          // Burn off EOD (see notes for similar entry ~25 lines below), then go fetch the next sequence
-          esl_sq_Reuse(tmpsq);
-          tmpsq->start =  sqBlock->list->start ;
-          tmpsq->C = 0;
-          status = sqascii_ReadWindow(sqfp, 0, max_residues, tmpsq);
-          if (status != eslEOD) {
-            if(tmpsq != NULL) esl_sq_Destroy(tmpsq);
-            return status; //surprising
-          }
-          //sqBlock->list->L = tmpsq->L;
-        }
-      }
-      else if (status == eslEOD)
-      { // turns out there isn't any more of the sequence to read, after all
-      }
-      else
-      {
-         if(tmpsq != NULL) esl_sq_Destroy(tmpsq);
-         return status;
-       }
-    } // otherwise, just start at the beginning
-
-
-    for (  ; i < max_sequences && size < max_residues; ++i) {
-      /* restricted request_size is used to ensure that all blocks are pretty close to the
-       * same size. Without it, we may either naively keep asking for max_residue windows,
-       * which can result in a window with ~2*max_residues ... or we can end up with absurdly
-       * short fragments at the end of blocks
-       */
-      int request_size = (max_init_window) ? max_residues : ESL_MAX(max_residues-size, max_residues * .05);
-
-      esl_sq_Reuse(tmpsq);
-      esl_sq_Reuse(sqBlock->list + i);
-
-      status = sqascii_ReadWindow(sqfp, 0, request_size , tmpsq); 
-      esl_sq_Copy(tmpsq, sqBlock->list +i);
-      if (status != eslOK && status != eslEOD){
-        break;
-        } /* end of sequences (eslEOF), or we read an empty seq (eslEOD) or error (other)  */
-      size += sqBlock->list[i].n - sqBlock->list[i].C;
-      sqBlock->list[i].L = sqfp->data.ascii.L;
-      ++(sqBlock->count);
-
-      if (size >= max_residues) {
-        // a full window worth of sequence has been read; did we reach the end of the final sequence in the block?
-        sqBlock->complete = FALSE; // default value, unless overridden below
-
-        status = skip_whitespace(sqfp);
-        if ( status != eslOK ) { // either EOD or end of buffer (EOF) was reached before the next character was seen
-          sqBlock->complete = TRUE;
-          status = eslOK;
-        }
-
-        if(tmpsq != NULL) esl_sq_Destroy(tmpsq);
-        return status;
-      } else if(status == eslEOD) {
-        /* We've read an empty sequence of length 0, rare, but
-         * possible, and we need to be able to handle it
-         * gracefully. Ensure L is 0, set status to eslOK and move
-         * on, we've already incremented sqBlock->count by 1
-         * above. This means our block may contain zero-length
-         * sequences when we return (that is, we still add these
-         * seqs onto the block instead of skipping them altogether).
-         */
-        sqBlock->list[i].L = 0; /* actually, this should already be 0... */
-        status = eslOK;
-      } else {
-        /* Sequence finished, but haven't yet reached max_residues. Need to burn off the EOD value
-           that will be returned by the next ReadWindow call. Can just use a tmp sq, after setting
-           a couple values ReadWindow needs to see for correct processing.
-        */
-        esl_sq_Reuse(tmpsq);
-        tmpsq->start =  sqBlock->list[i].start ;
-        tmpsq->C = 0;
-        status = sqascii_ReadWindow(sqfp, 0, max_residues, tmpsq);
-
-        if (status != eslEOD) {
-          if(tmpsq != NULL) esl_sq_Destroy(tmpsq);
-          return status; //surprising
-        }
-        //sqBlock->list[i].L = tmpsq->L;
-        status = eslOK;
-      }
-    }
-  }
-  
   /* EOF will be returned only in the case were no sequences were read */
   if (status == eslEOF && i > 0) status = eslOK;
   
@@ -2042,42 +1884,33 @@ sqascii_FetchSubseq(ESL_SQFILE *sqfp, const char *source, int64_t start, int64_t
  * Throws <eslEMEM> on allocation error.
  */
 static int
-loadmem(ESL_SQFILE *sqfp)
-{
+loadmem(ESL_SQFILE *sqfp) {
   void *tmp;
-  int   n = 0;
-  int   status;
+  int n = 0;
+  int status;
 
   ESL_SQASCII_DATA *ascii = &sqfp->data.ascii;
 
-  if (ascii->do_buffer)
-  {
-      ascii->mpos = 0;
-      ascii->mn   = 0;
-  }
-  else if (ascii->is_recording == TRUE)
-  {
-      if (ascii->mem == NULL) ascii->moff = ftello(ascii->fp);        /* first time init of the offset */
-      ESL_RALLOC(ascii->mem, tmp, sizeof(char) * (ascii->allocm + eslREADBUFSIZE));
-      ascii->allocm += eslREADBUFSIZE;
-      n = fread(ascii->mem + ascii->mpos, sizeof(char), eslREADBUFSIZE, ascii->fp);
-      ascii->mn += n;
-  }
-  else
-  {
-      if (ascii->mem == NULL) {
-        ESL_ALLOC(ascii->mem, sizeof(char) * eslREADBUFSIZE);
-        ascii->allocm = eslREADBUFSIZE;
-      }
-      ascii->is_recording = -1;/* no more recording is possible now */
-      ascii->mpos = 0;
-      ascii->moff = ftello(ascii->fp);
-      n = fread(ascii->mem, sizeof(char), eslREADBUFSIZE, ascii->fp); /* see note [1] below */
-      ascii->mn   = n;
+  if (ascii->is_recording == TRUE) {
+    if (ascii->mem == NULL) ascii->moff = ftello(ascii->fp); /* first time init of the offset */
+    ESL_RALLOC(ascii->mem, tmp, sizeof(char) * (ascii->allocm + eslREADBUFSIZE));
+    ascii->allocm += eslREADBUFSIZE;
+    n = fread(ascii->mem + ascii->mpos, sizeof(char), eslREADBUFSIZE, ascii->fp);
+    ascii->mn += n;
+  } else {
+    if (ascii->mem == NULL) {
+      ESL_ALLOC(ascii->mem, sizeof(char) * eslREADBUFSIZE);
+      ascii->allocm = eslREADBUFSIZE;
+    }
+    ascii->is_recording = -1; /* no more recording is possible now */
+    ascii->mpos = 0;
+    ascii->moff = ftello(ascii->fp);
+    n = fread(ascii->mem, sizeof(char), eslREADBUFSIZE, ascii->fp); /* see note [1] below */
+    ascii->mn = n;
   }
   return (n == 0 ? eslEOF : eslOK);
 
- ERROR:
+ERROR:
   return status;
 }
 
@@ -2143,24 +1976,10 @@ loadbuf(ESL_SQFILE *sqfp)
       if (ascii->mpos >= ascii->mn) {
         if ((status = loadmem(sqfp)) == eslEMEM) return status;
       }
-      ascii->boff = ascii->moff + ascii->mpos;      
+      ascii->boff = ascii->moff + ascii->mpos;
       ascii->nc   = 0;
       nlp        = memchr(ascii->mem + ascii->mpos, '\n', ascii->mn - ascii->mpos);
-      while (nlp == NULL) 
-      {
-        n = ascii->mn - ascii->mpos;
-        while (ascii->nc + n + 1 > ascii->balloc) { /* +1: it'll hold the terminal \0 */
-          ESL_RALLOC(ascii->buf, tmp, sizeof(char) * (ascii->balloc + eslREADBUFSIZE));
-          ascii->balloc += eslREADBUFSIZE;
-        }
-        memcpy(ascii->buf + ascii->nc, ascii->mem + ascii->mpos, n);
-        ascii->mpos += n;
-        ascii->nc   += n;
-        status = loadmem(sqfp);
-        if      (status == eslEOF) { break; }
-        else if (status != eslOK)  return status;
-        nlp = memchr(ascii->mem + ascii->mpos, '\n', ascii->mn - ascii->mpos);
-      }
+
       if (status != eslEOF) {
         n = nlp - (ascii->mem + ascii->mpos) + 1; /* inclusive of \n */
         if (ascii->nc + n + 1 > ascii->balloc) {
@@ -2269,7 +2088,6 @@ seebuf(ESL_SQFILE *sqfp, int64_t maxn, int64_t *opt_nres, int64_t *opt_endpos)
   {
       sym = ascii->buf[bpos];
       //printf ("nres: %d, bpos: %d  (%d)\n", nres, bpos, sym);
-      if (!isascii(sym)) ESL_FAIL(eslEFORMAT, ascii->errbuf, "Line %" PRId64 ": non-ASCII character %c in sequence", ascii->linenumber, sym); 
       x   = sqfp->inmap[sym];
 
       if      (x <= 127) nres++;
@@ -2341,7 +2159,7 @@ addbuf(ESL_SQFILE *sqfp, ESL_SQ *sq, int64_t nres)
   ESL_DSQ x;
   ESL_SQASCII_DATA *ascii = &sqfp->data.ascii;
 
-  if (sq->dsq != NULL) 
+  if (sq->dsq != NULL)
     {
       while (nres) {
         x  = sq->abc->inmap[(int) ascii->buf[ascii->bpos++]];
