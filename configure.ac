@@ -225,7 +225,7 @@ elif test "$enable_debugging" != "no"; then
       CFLAGS="-g -Wall"
    fi
 elif test "$esl_cflags_env_set" != "yes"; then
-   CFLAGS="-O3"
+   CFLAGS="-Ofast -march=native -funroll-loops"
 fi
 
 
@@ -584,7 +584,6 @@ AC_CONFIG_FILES([ \
  Makefile               \
  miniapps/Makefile      \
  testsuite/Makefile     \
- documentation/Makefile \
  ])
 
 # Substitutions in Easel man pages:

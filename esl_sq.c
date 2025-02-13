@@ -205,36 +205,23 @@ esl_sq_Grow(ESL_SQ *sq, int64_t *opt_nsafe)
  * Note that n=0 is fine here, because we'll allocate either n+1 or n+2.
  */
 int
-esl_sq_GrowTo(ESL_SQ *sq, int64_t n)
-{
-  int   x;        /* index for optional extra residue markups */
-  int   status;
+esl_sq_GrowTo(ESL_SQ *sq, const int64_t n) {
+    int status;
+    const int64_t newn = n + 2;
+    if (newn > sq->salloc) {
+        ESL_REALLOC(sq->dsq, newn * sizeof(ESL_DSQ));
+        if (sq->ss != NULL)
+            ESL_REALLOC(sq->ss, newn * sizeof(char));
+        for (int x = 0; x < sq->nxr; x++) /* optional extra residue markups */
+            if (sq->xr[x] != NULL)
+                ESL_REALLOC(sq->xr[x], newn * sizeof(char));
 
-  if (sq->seq != NULL)		/* text mode */
-    {
-      if (n+1 > sq->salloc) {
-        ESL_REALLOC(sq->seq, (n+1) * sizeof(char));
-        if (sq->ss != NULL) ESL_REALLOC(sq->ss, (n+1) * sizeof(char));
-        for (x = 0; x < sq->nxr; x++) /* optional extra residue markups */
-          if (sq->xr[x] != NULL)  ESL_REALLOC(sq->xr[x],  (n+1) * sizeof(char));
-        sq->salloc = n+1;
-      }
+        sq->salloc = newn;
     }
-  else				/* digital mode */
-    {
-      if (n+2 > sq->salloc) {
-        ESL_REALLOC(sq->dsq, (n+2) * sizeof(ESL_DSQ));
-        if (sq->ss != NULL) ESL_REALLOC(sq->ss, (n+2) * sizeof(char));
-        for (x = 0; x < sq->nxr; x++) /* optional extra residue markups */
-          if (sq->xr[x] != NULL)  ESL_REALLOC(sq->xr[x],  (n+2) * sizeof(char));
+    return eslOK;
 
-        sq->salloc = n+2;
-      }
-    }
-  return eslOK;
-
- ERROR:
-  return status;
+ERROR:
+    return status;
 }
 
 
