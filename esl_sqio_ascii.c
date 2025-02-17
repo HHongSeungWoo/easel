@@ -213,7 +213,6 @@ esl_sqascii_Open(char *filename, int format, ESL_SQFILE *sqfp)
     int fd = fileno(ascii->fp);
     posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
     posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED);
-    posix_fadvise(fd, 0, 0, POSIX_FADV_NOREUSE);
 
       /* Deal with the .gz special case: to popen(), "success" only means
        * it found and executed gzip -dc.  If gzip -dc doesn't find our
@@ -761,12 +760,12 @@ static int sqascii_Read(ESL_SQFILE *sqfp, ESL_SQ *sq) {
     int64_t n;
 
     // TODO 특정 파일은 설명이 필요함. 수정 필요.
-    if ((status = ascii->skip_header(sqfp, sq)) != eslOK) {
+    if ((status = ascii->parse_header(sqfp, sq)) != eslOK) {
         return status; /* EMEM, EOF, EFORMAT */
     }
 
     do {
-        if ((status = seebuf(sqfp, -1, &n, &epos)) == eslEFORMAT) {
+        if ((status = seebuf(sqfp, ascii->nc, &n, &epos)) == eslEFORMAT) {
             return status;
         }
         if (esl_sq_GrowTo(sq, sq->n + n) != eslOK) {
@@ -781,7 +780,7 @@ static int sqascii_Read(ESL_SQFILE *sqfp, ESL_SQ *sq) {
     } while ((status = loadbuf(sqfp)) == eslOK);
 
     if (status == eslEOF) {
-        if (!ascii->eof_is_ok) {
+        if (unlikely(!ascii->eof_is_ok)) {
             ESL_FAIL(eslEFORMAT, ascii->errbuf, "Unexpected EOF; file truncated?");
         }
         if ((status = ascii->parse_end(sqfp, sq)) != eslOK) {
@@ -797,11 +796,7 @@ static int sqascii_Read(ESL_SQFILE *sqfp, ESL_SQ *sq) {
     }
 
     int64_t nseq = sq->n;
-    if (sq->dsq != NULL) {
-        sq->dsq[nseq + 1] = eslDSQ_SENTINEL;
-    } else {
-        sq->seq[nseq] = '\0';
-    }
+    sq->dsq[nseq + 1] = eslDSQ_SENTINEL;
     sq->start = 1;
     sq->end   = nseq;
     sq->C     = 0;
@@ -2088,22 +2083,13 @@ nextchar(ESL_SQFILE *sqfp, char *ret_c)
  */
 static int seebuf(ESL_SQFILE *sqfp, int64_t maxn, int64_t *opt_nres, int64_t *opt_endpos) {
     ESL_SQASCII_DATA *ascii = &sqfp->data.ascii;
-    if (maxn == -1) maxn = ascii->nc; /* makes for a more efficient test. nc is a guaranteed upper bound on nres */
 
     // an optimization for determining lastrpl from nres, without incrementing lastrpl on every char
-    int64_t nres = 0, nres2 = 0;
+    int64_t nres = 0;
 
     int status               = eslOK;
     const char *restrict buf = ascii->buf;
-    int bpos                 = ascii->bpos;
-    int lasteol              = bpos - 1;
-    int curbpl               = ascii->curbpl;
-    int currpl               = ascii->currpl;
-    int rpl                  = ascii->rpl;
-    int prvrpl               = ascii->prvrpl;
-    int bpl                  = ascii->bpl;
-    int prvbpl               = ascii->prvbpl;
-    int64_t linenumber       = ascii->linenumber;
+    register int bpos        = ascii->bpos;
 
     // fasta만 처리한다고 가정하고 고정
     const __m128i nl_vec = _mm_set1_epi8('\n');
@@ -2127,27 +2113,10 @@ static int seebuf(ESL_SQFILE *sqfp, int64_t maxn, int64_t *opt_nres, int64_t *op
             const int64_t nres_pos = nres - 16 + offset;
 
             const char sym = buf[pos];
-            if (sym == 10) {
-                // 이 부분 중복임. 인라인 함수로 분리
-                if (curbpl != -1) curbpl += pos - lasteol;
-                if (currpl != -1) currpl += nres_pos - nres2;
-                nres2 = nres_pos;
-                if (rpl != 0 && prvrpl != -1) {
-                    if (rpl == -1) rpl = prvrpl;
-                    else if (prvrpl != rpl || currpl > rpl) rpl = 0;
-                }
-                if (bpl != 0 && prvbpl != -1) {
-                    if (bpl == -1) bpl = prvbpl;
-                    else if (prvbpl != bpl || curbpl > bpl) bpl = 0;
-                }
-                prvbpl  = curbpl;
-                prvrpl  = currpl;
-                curbpl  = 0;
-                currpl  = 0;
-                lasteol = pos;
-                nres--;
-                if (linenumber != -1) linenumber++;
-            } else if (sym == 62) {
+            nres--;
+
+            if (sym == 62) {
+                nres++;
                 bpos   = pos;
                 nres   = nres_pos;
                 status = eslEOD;
@@ -2160,23 +2129,6 @@ static int seebuf(ESL_SQFILE *sqfp, int64_t maxn, int64_t *opt_nres, int64_t *op
     while (bpos < maxn) {
         const char sym = buf[bpos];
         if (sym == 10) {
-            if (curbpl != -1) curbpl += bpos - lasteol;
-            if (currpl != -1) currpl += nres - nres2;
-            nres2 = nres;
-            if (rpl != 0 && prvrpl != -1) {
-                if (rpl == -1) rpl = prvrpl;
-                else if (prvrpl != rpl || currpl > rpl) rpl = 0;
-            }
-            if (bpl != 0 && prvbpl != -1) {
-                if (bpl == -1) bpl = prvbpl;
-                else if (prvbpl != bpl || curbpl > bpl) bpl = 0;
-            }
-            prvbpl  = curbpl;
-            prvrpl  = currpl;
-            curbpl  = 0;
-            currpl  = 0;
-            lasteol = bpos;
-            if (linenumber != -1) linenumber++;
         } else if (sym == 62) {
             status = eslEOD;
             break;
@@ -2187,17 +2139,6 @@ static int seebuf(ESL_SQFILE *sqfp, int64_t maxn, int64_t *opt_nres, int64_t *op
     }
 
 finish:;
-
-    if (curbpl != -1) curbpl += bpos - lasteol - 1;
-    if (currpl != -1) currpl += nres - nres2;
-
-    ascii->curbpl     = curbpl;
-    ascii->currpl     = currpl;
-    ascii->rpl        = rpl;
-    ascii->prvrpl     = prvrpl;
-    ascii->bpl        = bpl;
-    ascii->prvbpl     = prvbpl;
-    ascii->linenumber = linenumber;
 
     if (opt_nres != NULL) *opt_nres = nres;
     if (opt_endpos != NULL) *opt_endpos = bpos;
@@ -2247,9 +2188,9 @@ addbuf(ESL_SQFILE *sqfp, ESL_SQ *sq, int64_t nres) {
     static __m128i inmap_table[8];
     static int lookup_initialized = 0;
 
-    if (!lookup_initialized) {
+    if (unlikely(!lookup_initialized)) {
         for (int i = 0; i < 8; i++) {
-            inmap_table[i] = _mm_loadu_si128((__m128i *)(inmap + i * 16));
+            inmap_table[i] = _mm_load_si128((__m128i *)(inmap + i * 16));
         }
         lookup_initialized = 1;
     }
@@ -2987,22 +2928,15 @@ header_fasta(ESL_SQFILE *sqfp, ESL_SQ *sq)
   while (status == eslOK && (c == '\t' || c == ' ')) status = nextchar(sqfp, &c); /* skip space */
 
   /* Store the name (space delimited) */
-  pos = 0;
-  while (status == eslOK && ! isspace(c))
-  {
-      sq->name[pos++] = c;
-      if (pos == sq->nalloc-1) { ESL_RALLOC(sq->name, tmp, sq->nalloc*2); sq->nalloc*=2; }
-      status = nextchar(sqfp, &c);
-  }
-  if (pos == 0) ESL_FAIL(eslEFORMAT, ascii->errbuf, "Line %" PRId64 ": no FASTA name found", ascii->linenumber);
-  sq->name[pos] = '\0';
+  while (status == eslOK && !isspace(c)) status = nextchar(sqfp, &c);
+  sq->name[0] = '\0';
 
-  while (status == eslOK &&  (c == '\t' || c == ' ')) status = nextchar(sqfp, &c);   /* skip space */
+  while (status == eslOK && (c == '\t' || c == ' ')) status = nextchar(sqfp, &c); /* skip space */
 
   /* Store the description (end-of-line delimited) */
   /* Patched to deal with NCBI NR desclines: delimit by ctrl-A (0x01) too. [SRE:H1/82] */
   pos = 0;
-  while (status == eslOK && c != '\n' && c != '\r' && c != 1)
+  while (status == eslOK && c != '\n' && c != 1)
   {
       sq->desc[pos++] = c;
       if (pos == sq->dalloc-1) { ESL_RALLOC(sq->desc, tmp, sq->dalloc*2); sq->dalloc*= 2; }
@@ -3013,18 +2947,15 @@ header_fasta(ESL_SQFILE *sqfp, ESL_SQ *sq)
   /* Because of the NCBI NR patch, c might be0x01 ctrl-A now; skip to eol.
    * (TODO: I'm worried about the efficiency of this nextchar() stuff. Revisit.)
    */
-  while (status == eslOK && c != '\n' && c != '\r')
+  while (status == eslOK && c != '\n')
     status = nextchar(sqfp, &c);
   sq->hoff = ascii->boff + ascii->bpos;
 
-  while (status == eslOK && (c == '\n' || c == '\r')) status = nextchar(sqfp, &c); /* skip past eol (DOS \r\n, MAC \r, UNIX \n */
+  while (status == eslOK && c == '\n') status = nextchar(sqfp, &c); /* skip past eol (DOS \r\n, MAC \r, UNIX \n */
   if (status != eslOK && status != eslEOF) ESL_FAIL(eslEFORMAT, ascii->errbuf, "Unexpected failure in parsing FASTA name/description line");
   /* Edge case: if the last sequence in the file is L=0, no residues, we are EOF now, not OK; but we'll return OK because we parsed the header line */
 
   sq->doff = ascii->boff + ascii->bpos;
-  ascii->prvrpl = ascii->prvbpl = -1;
-  ascii->currpl = ascii->curbpl = 0;
-  ascii->linenumber++;
   return eslOK;
 
  ERROR:
@@ -3047,41 +2978,26 @@ header_fasta(ESL_SQFILE *sqfp, ESL_SQ *sq)
  * May also throw <eslEMEM> on allocation errors.
  */
 static int
-skip_fasta(ESL_SQFILE *sqfp, ESL_SQ *sq)
-{
-  char  c;
-  int   status = eslOK;
+skip_fasta(ESL_SQFILE *sqfp, ESL_SQ *sq) {
+    int status = eslOK;
 
-  ESL_SQASCII_DATA *ascii = &sqfp->data.ascii;
+    ESL_SQASCII_DATA *ascii  = &sqfp->data.ascii;
+    register int b           = ascii->bpos;
+    const char *restrict buf = ascii->buf;
 
-  c =  ascii->buf[ascii->bpos];
-  while (status == eslOK && isspace(c)) status = nextchar(sqfp, &c); /* skip space (including \n) */
+    while (1) {
+        if (buf[b] == '\n') {
+            break;
+        }
+        b++;
+    }
+    ascii->bpos = b;
 
-  if (status == eslEOF) return eslEOF;
-  if (status != eslOK)  ESL_FAIL(eslEFORMAT, ascii->errbuf, "Unexpected parsing error %d", status);
-  if (c != '>')         ESL_FAIL(eslEFORMAT, ascii->errbuf, "Line %" PRId64 ": unexpected char %c; expecting '>'", ascii->linenumber, c);
+    sq->doff = ascii->boff + ascii->bpos;
+    return eslOK;
 
-  sq->roff = ascii->boff + ascii->bpos; /* store SSI record offset */
-
-  /* zero out the name, accession and description */
-  sq->name[0] = '\0';
-  sq->acc[0]  = '\0';
-  sq->desc[0] = '\0';
-  
-  status = nextchar(sqfp, &c);
-  
-  /* skip to end of line */
-  while (status == eslOK && c != '\n' && c != '\r') status = nextchar(sqfp, &c); 
-  sq->doff = ascii->boff + ascii->bpos;
-
-  /* skip past end of line */
-  while (status == eslOK && (c == '\n' || c == '\r')) status = nextchar(sqfp, &c);
-
-  if (status != eslOK) ESL_FAIL(eslEFORMAT, ascii->errbuf, "Premature EOF in parsing FASTA name/description line");
-  sq->doff = ascii->boff + ascii->bpos;
-
-  ascii->linenumber++;
-  return eslOK;
+ERROR:
+    return status; /* eslEMEM, from failed realloc */
 }
 
 
@@ -3091,7 +3007,7 @@ end_fasta(ESL_SQFILE *sqfp, ESL_SQ *sq)
   ESL_SQASCII_DATA *ascii = &sqfp->data.ascii;
 
   if (ascii->bpos < ascii->nc) {
-    if (ascii->buf[ascii->bpos] != '>') ESL_FAIL(eslEFORMAT, ascii->errbuf, "Whoops, FASTA reader is corrupted");
+    if (unlikely(ascii->buf[ascii->bpos] != '>')) ESL_FAIL(eslEFORMAT, ascii->errbuf, "Whoops, FASTA reader is corrupted");
     sq->eoff = ascii->boff + ascii->bpos - 1; /* this puts eoff at the last \n */
   } /* else, EOF, and we don't have to do anything. */
   return eslOK;
