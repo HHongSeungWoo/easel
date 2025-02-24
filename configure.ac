@@ -225,7 +225,7 @@ elif test "$enable_debugging" != "no"; then
       CFLAGS="-g -Wall"
    fi
 elif test "$esl_cflags_env_set" != "yes"; then
-   CFLAGS="-Ofast -march=native -funroll-loops"
+   CFLAGS="-Ofast -msse4.2 -funroll-loops"
 fi
 
 
